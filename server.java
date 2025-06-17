@@ -61,16 +61,46 @@ public class server
     }
     private static void transfer(String filename, InetAddress clientAddress, int clientPort) throws IOException
     {
+        File file = new File(filename);
         int dataPort = 50000 + new Random().nextInt(1000);
-        try (DatagramSocket dataSocket = new DatagramSocket(dataPort))
+        try (DatagramSocket dataSocket = new DatagramSocket(dataPort);RandomAccessFile raf = new RandomAccessFile(file, "r"))
         {
-            sendResponse(clientAddress, clientPort, "OK " + filename + " PORT " + dataPort);
-            File file = new File(filename);
-            if (file.exists())
+            String okResponse = String.format("OK %s SIZE %d PORT %d",filename, file.length(), dataPort);
+            sendResponse(clientAddress, clientPort, okResponse);
+            byte[] buffer = new byte[1024];
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            while (true)
             {
-                String response = String.format("OK %s SIZE %d PORT %d",filename, file.length(), dataPort);
-                sendResponse(clientAddress, clientPort, response);
+                dataSocket.receive(packet);
+                String request = new String(packet.getData(), 0, packet.getLength()).trim();
+                if (request.startsWith("FILE") && request.contains("CLOSE"))
+                {
+                    String closeResponse = "FILE " + filename + " CLOSE_OK";
+                    sendResponse(clientAddress, clientPort, closeResponse);
+                    break;
+                }
+                if (request.startsWith("FILE") && request.contains("GET"))
+                {
+                    String[] parts = request.split(" ");
+                    long start = Long.parseLong(parts[4]);
+                    long end = Long.parseLong(parts[6]);
+                    int size = (int)(end - start + 1);
+                    byte[] fileData = new byte[size];
+                    raf.seek(start);
+                    raf.read(fileData);
+                    try
+                    {
+                        String dataResponse = String.format("FILE %s OK START %d END %d DATA %s", filename, start, end,Base64.getEncoder().encodeToString(fileData));
+                        sendResponse(clientAddress, clientPort, dataResponse);
+                    }
+                    catch (IOException e)
+                    {
+                        System.err.println("Error sending data block: " + e.getMessage());
+                        sendResponse(clientAddress, clientPort, "FILE " +filename + " ERROR");
+                    }
+                }
             }
         }
     }
 }
+
