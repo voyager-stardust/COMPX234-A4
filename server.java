@@ -5,6 +5,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.util.Base64;
+import java.util.Random;
 public class server
 {
     public static void main(String[] args) throws IOException
@@ -56,6 +57,20 @@ public class server
             byte[] data = message.getBytes();
             DatagramPacket packet=new DatagramPacket(data,data.length,address,port);
             tempSocket.send(packet);
+        }
+    }
+    private static void transfer(String filename, InetAddress clientAddress, int clientPort) throws IOException
+    {
+        int dataPort = 50000 + new Random().nextInt(1000);
+        try (DatagramSocket dataSocket = new DatagramSocket(dataPort))
+        {
+            sendResponse(clientAddress, clientPort, "OK " + filename + " PORT " + dataPort);
+            File file = new File(filename);
+            if (file.exists())
+            {
+                String response = String.format("OK %s SIZE %d PORT %d",filename, file.length(), dataPort);
+                sendResponse(clientAddress, clientPort, response);
+            }
         }
     }
 }
