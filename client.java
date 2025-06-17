@@ -12,4 +12,19 @@ public class client
         DatagramPacket packet = new DatagramPacket(message.getBytes(), message.length(), address, Integer.parseInt(args[1]));
         socket.send(packet);
     }
+    private static String Retry(DatagramSocket socket, InetAddress address,int port,String message) throws IOException
+    {
+        byte[] sendData = message.getBytes();
+        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, address, port);
+        for (int i = 0; i < 3; i++)
+        {
+            socket.send(sendPacket);
+            socket.setSoTimeout(1000 * (i+1));
+            byte[] receiveData = new byte[1024];
+            DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+            socket.receive(receivePacket);
+            return new String(receivePacket.getData(), 0, receivePacket.getLength());
+        }
+        return null;
+    }
 }
