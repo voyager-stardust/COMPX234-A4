@@ -27,4 +27,14 @@ public class client
         }
         return null;
     }
+    private static void showProgress(long bytesReceived, long fileSize)
+    {
+        System.out.print("\rDownloading: [");
+        int progress = (int)((double)bytesReceived/fileSize * 50);
+        for (int i = 0; i < 50; i++)
+        {
+            System.out.print(i < progress ? "=" : " ");
+        }
+        System.out.printf("] %d%%", (int)((double)bytesReceived/fileSize * 100));
+    }
 }
