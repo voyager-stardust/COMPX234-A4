@@ -1,53 +1,115 @@
-import java.io.File;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
+import java.io.*;
+import java.net.*;
+import java.util.*;
 import java.util.Base64;
-import java.util.Random;
+import java.util.concurrent.*;
 public class server
 {
-    public static void main(String[] args) throws IOException
+    private static final int MIN_DATA_PORT = 50000;
+    private static final int MAX_DATA_PORT = 50010;
+    private static final int BUFFER_SIZE = 2048;
+    private static final int MAX_THREADS = 50;
+    public static void main(String[] args)
     {
-        DatagramSocket socket = new DatagramSocket(Integer.parseInt(args[0]));
-        System.out.println("Server started on port " + args[0]);
+        if (args.length != 1)
+        {
+            System.out.println("Usage: java server <port>");
+            return;
+        }
+        ExecutorService threadPool = Executors.newFixedThreadPool(MAX_THREADS);
+        try (DatagramSocket serverSocket = new DatagramSocket(Integer.parseInt(args[0])))
+        {
+            System.out.println("Server started " + args[0]);
+            while (true)
+            {
+                try
+                {
+                    byte[] buffer = new byte[BUFFER_SIZE];
+                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                    serverSocket.receive(packet);
+                    String request = new String(packet.getData(),0, packet.getLength()).trim();
+                    if (request.startsWith("DOWNLOAD"))
+                    {
+                        String filename = request.substring(9).trim();
+                        threadPool.execute(() ->
+                        {
+                            try
+                            {
+                                handleDownloadRequest(filename,packet.getAddress(),packet.getPort());
+                            }
+                            catch (IOException e)
+                            {
+                                System.err.println("error download");
+                            }
+                        });
+                    }
+                }
+                catch (IOException e)
+                {
+                    System.err.println("error packet");
+                }
+            }
+        }
+        catch (SocketException e)
+        {
+            System.err.println("Could not start server: " + e.getMessage());
+        }
+        finally
+        {
+            threadPool.shutdown();
+        }
+    }
+    private static void handleDownloadRequest(String filename,InetAddress clientAddress,int clientPort) throws IOException
+    {
+        File file = new File(filename);
+        int dataPort = ThreadLocalRandom.current().nextInt(MIN_DATA_PORT, MAX_DATA_PORT + 1);
+        try (DatagramSocket dataSocket = new DatagramSocket(dataPort);RandomAccessFile raf = new RandomAccessFile(file, "r"))
+        {
+            System.out.println("Starting transfer "+filename+" to "+ clientAddress + ":" + clientPort + " on port " + dataPort);
+            sendResponse(clientAddress, clientPort,String.format("%s SIZE %d PORT %d",filename, file.length(), dataPort));
+            handleDataTransfer(dataSocket, raf, filename, clientAddress, clientPort);
+        }
+        catch (IOException e)
+        {
+            System.err.println("File error");
+            sendResponse(clientAddress, clientPort, "ERR " + filename + " TRANSFER_ERROR");
+        }
+    }
+    private static void handleDataTransfer(DatagramSocket socket,RandomAccessFile file, String filename,InetAddress clientAddress, int clientPort) throws IOException
+    {
+        byte[] buffer = new byte[BUFFER_SIZE];
+        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
         while (true)
         {
-            byte[] buffer = new byte[1024];
-            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            socket.receive(packet);
-            String request = new String(packet.getData(), 0, packet.getLength()).trim();
-            if (request.startsWith("DOWNLOAD"))
+            try
             {
-                String filename = request.substring(9).trim();
-                File file = new File(filename);
-                if (file.exists())
+                socket.receive(packet);
+                String request = new String(packet.getData(), 0, packet.getLength()).trim();
+                String[] tokens = request.split(" ");
+                if (tokens.length >= 3 && tokens[0].equals("FILE")&& tokens[2].equals("CLOSE"))
                 {
-                    String response = "OK " + filename;
-                    sendResponse(packet.getAddress(), packet.getPort(), response);
+                    sendResponse(clientAddress, clientPort,"FILE " + filename + " CLOSE_OK");
+                    System.out.println(filename + " for " + clientAddress);
+                    break;
                 }
-                else
+                if (tokens.length >= 7 && tokens[0].equals("FILE") && tokens[2].equals("GET"))
                 {
-                    String response = "ERR " + filename + " NOT_FOUND";
-                    sendResponse(packet.getAddress(), packet.getPort(), response);
-                }
-            }
-            else if (request.startsWith("FILE") && request.contains("GET"))
-            {
-                String[] parts = request.split(" ");
-                long start = Long.parseLong(parts[4]);
-                long end = Long.parseLong(parts[6]);
-                try (RandomAccessFile file = new RandomAccessFile(parts[1], "r"))
-                {
-                    byte[] data = new byte[(int)(end-start+1)];
+                    long start = Long.parseLong(tokens[4]);
+                    long end = Long.parseLong(tokens[6]);
+                    int size = (int)(end - start + 1);
+                    byte[] fileData = new byte[size];
                     file.seek(start);
-                    file.read(data);
-                    String response = "FILE " + parts[1] + " DATA " + Base64.getEncoder().encodeToString(data);
-                    sendResponse(packet.getAddress(), packet.getPort(), response);
+                    file.read(fileData);
+                    String response = String.format("FILE %s START %d END %d DATA %s",filename,start,end,Base64.getEncoder().encodeToString(fileData));
+                    sendResponse(clientAddress, clientPort, response);
                 }
             }
-            System.out.println("Received: " + new String(packet.getData()));
+            catch (IOException e)
+            {
+                System.err.println("Error during transfer");
+                sendResponse(clientAddress, clientPort,"FILE "+filename+" ERROR");
+                break;
+            }
         }
     }
     private static void sendResponse(InetAddress address, int port, String message) throws IOException
@@ -55,52 +117,8 @@ public class server
         try (DatagramSocket tempSocket = new DatagramSocket())
         {
             byte[] data = message.getBytes();
-            DatagramPacket packet=new DatagramPacket(data,data.length,address,port);
+            DatagramPacket packet = new DatagramPacket(data, data.length, address, port);
             tempSocket.send(packet);
         }
     }
-    private static void transfer(String filename, InetAddress clientAddress, int clientPort) throws IOException
-    {
-        File file = new File(filename);
-        int dataPort = 50000 + new Random().nextInt(1000);
-        try (DatagramSocket dataSocket = new DatagramSocket(dataPort);RandomAccessFile raf = new RandomAccessFile(file, "r"))
-        {
-            String okResponse = String.format("OK %s SIZE %d PORT %d",filename, file.length(), dataPort);
-            sendResponse(clientAddress, clientPort, okResponse);
-            byte[] buffer = new byte[1024];
-            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            while (true)
-            {
-                dataSocket.receive(packet);
-                String request = new String(packet.getData(), 0, packet.getLength()).trim();
-                if (request.startsWith("FILE") && request.contains("CLOSE"))
-                {
-                    String closeResponse = "FILE " + filename + " CLOSE_OK";
-                    sendResponse(clientAddress, clientPort, closeResponse);
-                    break;
-                }
-                if (request.startsWith("FILE") && request.contains("GET"))
-                {
-                    String[] parts = request.split(" ");
-                    long start = Long.parseLong(parts[4]);
-                    long end = Long.parseLong(parts[6]);
-                    int size = (int)(end - start + 1);
-                    byte[] fileData = new byte[size];
-                    raf.seek(start);
-                    raf.read(fileData);
-                    try
-                    {
-                        String dataResponse = String.format("FILE %s OK START %d END %d DATA %s", filename, start, end,Base64.getEncoder().encodeToString(fileData));
-                        sendResponse(clientAddress, clientPort, dataResponse);
-                    }
-                    catch (IOException e)
-                    {
-                        System.err.println("Error sending data block: " + e.getMessage());
-                        sendResponse(clientAddress, clientPort, "FILE " +filename + " ERROR");
-                    }
-                }
-            }
-        }
-    }
 }
-
